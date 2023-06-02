@@ -1,8 +1,11 @@
 PROJECT_DIR:=.
-PROJECT_NAME:=lido-zkllvm-accounting-circuit
+PROJECT_NAME:=crypto3_lido_accounting_circuit
 BUILD_DIR:=${PROJECT_DIR}/build
 DOCKER_CONTAINER:=zkllvm
-DOCKER_IMAGE_NAME=zkllvm-dev
+DOCKER_IMAGE_NAME:=zkllvm-dev
+SCRIPTS_VIRTUALENV_NAME:=${PROJECT_NAME}
+SCRIPTS_VIRTUALENV_LOCATION:=~/.virtualenvs/${SCRIPTS_VIRTUALENV_NAME}
+SCRIPTS_DEPENDENCIES_FILE:=${PROJECT_DIR}/scripts/requirements.txt
 
 docker-build:
 	docker build -t ${DOCKER_IMAGE_NAME} .
@@ -47,17 +50,18 @@ cmake-gen:
 cmake-regen: cmake-clean cmake-gen
 
 bld:
-	cmake --build ${BUILD_DIR} -t ${PROJECT_NAME}
+	cmake --build ${BUILD_DIR} --target ${PROJECT_NAME}
 
 assign: bld
 	assigner -b ${BUILD_DIR}/src/${PROJECT_NAME}.bc -i ${PROJECT_DIR}/src/${PROJECT_NAME}.inp -t ${BUILD_DIR}/${PROJECT_NAME}.tbl -c ${BUILD_DIR}/${PROJECT_NAME}.crct -e pallas
 
-build-tests:
+tests-build:
+	cmake -DBUILD_PROJECT_TESTS=TRUE -DBUILD_TESTS=FALSE -S . -B ${BUILD_DIR}
 	cmake --build ${BUILD_DIR} --target tests
 
-test: build-tests
+tests-run: tests-build
 	CTEST_OUTPUT_ON_FAILURE=1 cmake --build ${BUILD_DIR} --target test
-
+	
 gen-proof: assign
 	echo "TBD proof"
 
@@ -66,4 +70,23 @@ verify-proof: gen-proof
 
 e2e: verify-proof
 
-.PHONY: test
+scripts-create-env:
+	virtualenv -p python3.11 ${SCRIPTS_VIRTUALENV_LOCATION}
+
+scripts-activate-env:
+	. ${SCRIPTS_VIRTUALENV_LOCATION}/bin/activate
+
+scripts-destroy-env: 
+	rm -rf ${SCRIPTS_VIRTUALENV_LOCATION}
+
+scripts-install-deps: scripts-activate-env
+	pip install -r ${SCRIPTS_DEPENDENCIES_FILE}
+
+scripts-save-deps: scripts-activate-env
+	pip freeze > ${SCRIPTS_DEPENDENCIES_FILE}
+
+scripts-recreate-env: scripts-destroy-env scripts-create-env scripts-install-deps
+
+run-script: scripts-activate-env
+	python -m $@
+

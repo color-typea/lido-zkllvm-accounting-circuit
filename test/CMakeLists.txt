@@ -14,7 +14,7 @@ if(NOT Boost_UNIT_TEST_FRAMEWORK_FOUND)
     cm_find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 endif()
 
-cm_test_link_libraries(circuit ${Boost_LIBRARIES})
+cm_test_link_libraries(${Boost_LIBRARIES})
 # cm_test_link_libraries(curcuit_lib ${Boost_LIBRARIES})
 
 macro(define_test name)
@@ -26,9 +26,11 @@ macro(define_test name)
 
     #                            ${Boost_INCLUDE_DIRS})
 
-    set_target_properties(${name}_test PROPERTIES
-                          CXX_STANDARD 17
-                          CXX_STANDARD_REQUIRED TRUE)
+    set_target_properties(${name}_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED TRUE)
+
+    if ($ENV{TEST_TRACING})
+        target_compile_definitions(${name}_test PRIVATE TEST_TRACING)
+    endif()
 
     get_target_property(target_type Boost::unit_test_framework TYPE)
     if(target_type STREQUAL "SHARED_LIB")
@@ -51,6 +53,8 @@ endmacro()
 set(TESTS_NAMES
     "lib"
 )
+
+file(COPY "data/" DESTINATION "data/")
 
 foreach(TEST_NAME ${TESTS_NAMES})
     define_test(${TEST_NAME})
