@@ -5,7 +5,7 @@
 
 #include "lib.hpp"
 
-#include "testutil.hpp"
+#include "tracing.hpp"
 
 using hash_type = hashes::sha2<256>;
 using half_block = std::array<hash_type::block_type::value_type, hash_type::block_words / 2>;

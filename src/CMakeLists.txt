@@ -47,5 +47,5 @@ function(add_example example_target)
                 LINK_LIBRARIES ${CRYPTO3_DEPENDENCIES} ${Boost_LIBRARIES} template_lib)
 endfunction()
 
-add_example(template SOURCES main.cpp INPUT main.inp)
+add_example(circuit SOURCES circuit.cpp INPUT circuit.inp)
 
