@@ -38,3 +38,6 @@ build/
 cmake-build-debug/
 # configuration directory with Proof Market credentials
 .config
+
+temp
+.vscode
