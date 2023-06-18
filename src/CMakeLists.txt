@@ -39,4 +39,4 @@ function(add_example example_target)
                 ${Boost_LIBRARIES})
 endfunction()
 
-add_example(template SOURCES main.cpp INPUT main.inp)
+add_example(lido_accounting_circuit SOURCES circuit.cpp INPUT circuit.inp)
