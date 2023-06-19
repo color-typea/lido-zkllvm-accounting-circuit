@@ -3,7 +3,7 @@
 #include <boost/test/data/test_case.hpp>
 #include <filesystem>
 
-#include "../src/lib.hpp"
+#include "lib.hpp"
 
 #include <common.hpp>
 

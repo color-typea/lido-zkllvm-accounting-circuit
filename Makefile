@@ -87,10 +87,10 @@ circuit-proof: circuit-statement
 
 tests-build:
 	cmake -DBUILD_PROJECT_TESTS=TRUE -DBUILD_TESTS=FALSE -S . -B ${BUILD_DIR}
-	cmake --build ${BUILD_DIR} --target tests
+	cmake --build ${BUILD_DIR} --target lib_test
 
 tests-run: tests-build
-	CTEST_OUTPUT_ON_FAILURE=1 cmake --build ${BUILD_DIR} --target test
+	CTEST_OUTPUT_ON_FAILURE=1 cmake --build ${BUILD_DIR} --target lib_test
 
 verify-proof: gen-proof
 	echo "TBD verify"
