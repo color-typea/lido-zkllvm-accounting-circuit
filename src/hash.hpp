@@ -7,7 +7,7 @@ using namespace nil::crypto3;
 
 #ifdef __ZKLLVM__
 template<typename HashType>
-typename HashType::digest_type hash_single(typename HashType::block_type block0) {
+typename HashType::digest_type hash_one(typename HashType::block_type block0) {
       return hash<HashType>(block0);
 }
 
