@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from typing import List
@@ -9,7 +10,7 @@ from hashlib import sha256
 MAX_GWEI = 2 ** 64 - 1
 OUTPUT = os.path.join(config.TEMP_FOLDER, "gen_balances.ssz")
 MILLIETH = 10**15
-DEBUG = True
+DEBUG = False
 
 BALANCES_TREE_HEIGHT = 38
 
@@ -137,8 +138,19 @@ def merkelize(array, tree_height):
 def mix_in_size(root, size):
     return hash_pair(root, size.to_bytes(32, 'little', signed=False))
 
+def as_field(value):
+    if isinstance(value, bytes):
+        to_parse = value
+    else:
+        to_parse = value.to_bytes(32, 'little', signed=False)
+
+    low = int.from_bytes(to_parse[:16], 'little', signed=False)
+    high = int.from_bytes(to_parse[16:], 'little', signed=False)
+    # return [f"{low}", f"{high}"]
+    return [low, high]
+
 def main():
-    balances = get_fixed_balances(count=20)
+    balances = get_fixed_balances(count=8)
     # Computing merkle tree root via SSZ
     hash_tree_root = Balances.get_hash_tree_root(balances)
     with open(OUTPUT, "w") as output_file:
@@ -155,6 +167,16 @@ def main():
     print(f"Standalone merkle: {standalone_merkle.hex()}")
     print(f"SSZ              : {hash_tree_root.hex()}")
     print(f"Sum : {sum(balances)}")
+
+    print("Circuit input:")
+    circuit_input = [
+        {"vector": list(as_field(value) for value in balances)},
+        # {"int": len(values)},
+        {"vector": as_field(sum(balances))},
+        {"vector": as_field(int.from_bytes(hash_tree_root, 'little', signed=False))}
+    ]
+    jsonified = json.dumps(circuit_input)
+    print(jsonified)
 
 if __name__ == "__main__":
     main()

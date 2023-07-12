@@ -24,12 +24,11 @@ set(CRYPTO3_DEPENDENCIES
     crypto3::zk
 )
 
-add_library(template_lib INTERFACE)
+# add_library(template_lib INTERFACE)
 
-target_include_directories(template_lib 
-    INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-target_link_libraries(template_lib INTERFACE ${CRYPTO3_DEPENDENCIES})
-
+# target_include_directories(template_lib 
+#     INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+# target_link_libraries(template_lib INTERFACE ${CRYPTO3_DEPENDENCIES})
 
 function(add_example example_target)
     set(prefix ARG)
@@ -44,7 +43,7 @@ function(add_example example_target)
     add_circuit(${example_target}
                 SOURCES ${ARG_SOURCES}
 
-                LINK_LIBRARIES ${CRYPTO3_DEPENDENCIES} ${Boost_LIBRARIES} template_lib)
+                LINK_LIBRARIES ${CRYPTO3_DEPENDENCIES} ${Boost_LIBRARIES})
 endfunction()
 
 add_example(circuit SOURCES circuit.cpp INPUT circuit.inp)

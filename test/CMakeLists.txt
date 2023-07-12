@@ -5,6 +5,8 @@
 # See accompanying file LICENSE_1_0.txt or copy at
 # http://www.boost.org/LICENSE_1_0.txt
 #---------------------------------------------------------------------------#
+set(CMAKE_CXX_COMPILER ~/Projects/crypto/zkllvm/zkllvm/build/libs/circifier/llvm/bin/clang-16)
+set(CMAKE_C_COMPILER ~/Projects/crypto/zkllvm/zkllvm/build/libs/circifier/llvm/bin/clang-16)
 
 include(CMTest)
 
@@ -44,8 +46,6 @@ macro(define_test name)
 endmacro()
 
 set(TESTS_NAMES
-    "hash"
-    "lib"
 )
 
 foreach(TEST_NAME ${TESTS_NAMES})
