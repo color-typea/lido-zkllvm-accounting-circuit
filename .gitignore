@@ -38,3 +38,4 @@ build/
 cmake-build-debug/
 temp
 .vscode
+output
