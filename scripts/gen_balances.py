@@ -147,7 +147,7 @@ def as_field(value):
     low = int.from_bytes(to_parse[:16], 'little', signed=False)
     high = int.from_bytes(to_parse[16:], 'little', signed=False)
     # return [f"{low}", f"{high}"]
-    return [low, high]
+    return [str(low), str(high)]
 
 def main():
     balances = get_fixed_balances(count=8)
@@ -170,10 +170,9 @@ def main():
 
     print("Circuit input:")
     circuit_input = [
-        {"vector": list(as_field(value) for value in balances)},
-        # {"int": len(values)},
-        {"vector": as_field(sum(balances))},
-        {"vector": as_field(int.from_bytes(hash_tree_root, 'little', signed=False))}
+        {"array": balances},
+        {"vector": as_field(hash_tree_root)},
+        {"int": sum(balances)}
     ]
     jsonified = json.dumps(circuit_input)
     print(jsonified)
