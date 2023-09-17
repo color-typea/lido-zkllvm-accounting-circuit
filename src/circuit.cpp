@@ -1,4 +1,4 @@
-#include <nil/crypto3/hash/algorithm/hash.hpp>
+ #include <nil/crypto3/hash/algorithm/hash.hpp>
 #include <nil/crypto3/hash/sha2.hpp>
 #include <cstdint>
 
@@ -71,32 +71,47 @@ constexpr std::size_t BALANCES_TARGET_TREE_HEIGHT = VALIDATORS_MAX_SIZE_LOG2 - B
 // but only carrying actual number of validators (~1M by Oct 2023), while circuit has to use array and thus would carry a full
 // VALIDATORS_MAX_SIZE elements - which is a lot. So we're using a smaller "problem size" to carry (and pass aroung) the necessary
 // minimum of "padding" elemetns.
-constexpr std::size_t PROBLEM_SIZE_LOG2 = 6;
+constexpr std::size_t PROBLEM_SIZE_LOG2 = 4;
 constexpr std::size_t VALIDATORS_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
+constexpr std::size_t VALIDATORS_TREE_HEIGHT = PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
 constexpr std::size_t BALANCES_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
 constexpr std::size_t BALANCES_TREE_HEIGHT = PROBLEM_SIZE_LOG2 - BALANCES_PER_LEAF_LOG2;
-constexpr std::size_t BALANCES_LEAFS_COUNT = 1 << BALANCES_TREE_HEIGHT; // 2 ** BALANCES_TREE_HEIGHT
+constexpr std::size_t BALANCES_LEAFS_COUNT = BALANCES_COUNT / BALANCES_PER_LEAF;
+
+constexpr std::size_t VALIDATOR_FIELDS = 8;
+constexpr std::size_t BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH = 6;
+constexpr std::size_t BEACON_BLOCK_FIELDS_COUNT = 5;
 
 bool is_same(block_type block0, block_type block1){
     return block0[0] == block1[0] && block0[1] == block1[1];
 }
 
 template <std::size_t LayerSize>
-block_type hash_layer(std::array<block_type, LayerSize> input){
-    std::array<block_type, LayerSize / 2> next_layer;
+block_type hash_layer(std::array<block_type, LayerSize> input, size_t layer){
+    constexpr size_t NextLayerSize = (LayerSize % 2 == 0) ? LayerSize / 2 : (LayerSize / 2 + 1);
+    std::array<block_type, NextLayerSize> next_layer;
 
     for (std::size_t leaf_index = 0; leaf_index < LayerSize / 2; leaf_index++) {
         next_layer[leaf_index] = hash<hash_type>(input[2 * leaf_index], input[2 * leaf_index + 1]);
     }
+    if (LayerSize % 2 != 0) {
+        // next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[layer]);
+        next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[2]);
+    }
     if (LayerSize == 2)
         return next_layer[0];
     else
-        return hash_layer<LayerSize / 2>(next_layer);
+        return hash_layer<NextLayerSize>(next_layer, layer + 1);
+}
+
+template <std::size_t LayerSize>
+block_type hash_tree(std::array<block_type, LayerSize> input){
+    return hash_layer(input, 0);
 }
 
 template <std::size_t BalancesCount>
 std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_field_elements(
-    std::array<int64_t, BalancesCount> validator_balances
+    std::array<uint64_t, BalancesCount> validator_balances
 ) {
     std::array<block_type, BALANCES_LEAFS_COUNT> leafs;
     for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
@@ -120,52 +135,187 @@ std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_fie
     return leafs;
 }
 
-block_type mix_in_size(const block_type root, size_t size) {
-    decomposed_int64_type size_bits = __builtin_assigner_bit_decomposition64(size);
-    block_type size_as_block = {
-        __builtin_assigner_bit_composition128(size_bits, 0),
-        __builtin_assigner_bit_composition128(0, 0)
+block_type lift_uint64(uint64_t value) {
+    return {
+        __builtin_assigner_bit_composition128(__builtin_assigner_bit_decomposition64(value), 0),
+        0
     };
-    return hash<hash_type>(root, size_as_block);
+}
+
+block_type mix_in_size(const block_type root, size_t size) {
+    return hash<hash_type>(root, lift_uint64(size));
 }
 
 template <size_t TargetTreeHeight, size_t LeafsCount, size_t LeafsTreeHeight>
 block_type merkelize(std::array<block_type, LeafsCount> merkle_leaves) {
-    block_type leaves_tree_root = hash_layer<LeafsCount>(merkle_leaves);
+    block_type leaves_tree_root = hash_tree<LeafsCount>(merkle_leaves);
 
     block_type current_hash = leaves_tree_root;
     for (size_t height = LeafsTreeHeight; height < TargetTreeHeight; ++height) {
-        current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
+        // current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
+        // The above is correct, but crashes assigner - something is wrong with zerohashes
+        // The version above optimizes out zerohashes and "unblocks" us temporarily
+        current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[2]);
     }
     return current_hash;
 }
 
-
-[[circuit]] 
-bool circuit(
-    [[private]] std::array<int64_t, VALIDATORS_COUNT> validator_balances,
-    size_t validator_balances_count, // this is the number of real, non-empty balances in use
-    block_type expected_root,
-    unsigned long long expected_total_balance
+block_type compute_balances_ssz_merkleization(
+    size_t actual_validator_count,
+    std::array<uint64_t, BALANCES_COUNT> validator_balances
 ) {
-    if (validator_balances_count > VALIDATORS_COUNT) {
-        return false;
-    }
-
-    unsigned long long total_balance = 0;
-    for (std::size_t i = 0; i < validator_balances_count; i++) {
-        total_balance += validator_balances[i];
-    }
-
     std::array<block_type, BALANCES_LEAFS_COUNT> balances_leaves = pack_balances_into_field_elements<BALANCES_COUNT>(validator_balances);
 
     /**
      * This is an implementation of SSZ merkleization, as it is performed for BeaconState.balances field
      */ 
-    block_type hash_result = mix_in_size(
-        merkelize<BALANCES_TREE_HEIGHT, BALANCES_LEAFS_COUNT, BALANCES_TARGET_TREE_HEIGHT>(balances_leaves), 
-        validator_balances_count
+    return mix_in_size(
+        merkelize<BALANCES_TARGET_TREE_HEIGHT, BALANCES_LEAFS_COUNT, BALANCES_TREE_HEIGHT>(balances_leaves), 
+        actual_validator_count
     );
-    
-    return (is_same(expected_root, hash_result) && (expected_total_balance == total_balance));
+}
+
+block_type compute_validators_ssz_merkleization(
+    size_t actual_validator_count,
+    std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
+    std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_effective_balances,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_slashed,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_activation_epoch,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_exit_epoch,
+    std::array<uint64_t, VALIDATORS_COUNT> validators_withdrawable_epoch
+) {
+    std::array<block_type, VALIDATORS_COUNT> validator_leaves;
+
+    for (size_t validator_idx; validator_idx < VALIDATORS_COUNT; ++validator_idx) {
+        validator_leaves[validator_idx] = hash_tree<8>({
+            validators_pubkeys[validator_idx],
+            validators_withdrawal_credentials[validator_idx],
+            lift_uint64(validators_effective_balances[validator_idx]),
+            lift_uint64(validators_slashed[validator_idx]),
+            lift_uint64(validators_activation_eligibility_epoch[validator_idx]),
+            lift_uint64(validators_activation_epoch[validator_idx]),
+            lift_uint64(validators_exit_epoch[validator_idx]),
+            lift_uint64(validators_withdrawable_epoch[validator_idx])
+        });
+    }
+
+    return mix_in_size(
+        merkelize<VALIDATORS_TARGET_TREE_HEIGHT, VALIDATORS_COUNT, VALIDATORS_TREE_HEIGHT>(validator_leaves), 
+        actual_validator_count
+    );
+}
+
+template <size_t ProofSize>
+bool verify_inclusion_proof(block_type field_hash, block_type merkle_root, std::array<block_type, ProofSize> inclusion_proof) {
+    block_type current_hash = field_hash;
+    for (int idx = 0; idx < ProofSize; ++idx) {
+        current_hash = hash<hash_type>(current_hash, inclusion_proof[idx]);
+    }
+    return is_same(current_hash, merkle_root);
+}
+
+[[circuit]] 
+bool circuit(
+    [[private]] size_t actual_validator_count, // this is the number of real, non-empty validators and balances in use
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validator_balances,
+    [[private]] std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
+    [[private]] std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_effective_balances,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_slashed,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_activation_epoch,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_exit_epoch,
+    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_withdrawable_epoch,
+    block_type lido_withdrawal_credentials,
+    uint64_t slot,
+    uint64_t epoch,
+    uint64_t expected_total_balance,
+    uint64_t expected_all_lido_validators,
+    uint64_t expected_exited_lido_validators,
+    block_type expected_balances_hash,
+    block_type expected_validators_hash,
+    block_type beacon_state_hash,
+    block_type beacon_block_hash,
+    [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> balances_hash_inclusion_proof,
+    [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> validators_hash_inclusion_proof,
+    std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
+) {
+    // Sanity-checking input
+    if (
+        (actual_validator_count > VALIDATORS_COUNT) ||
+        (slot < epoch * 32) ||
+        (slot >= (epoch + 1) * 32)
+    ) {
+        return false;
+    }
+
+    // Independently compute report...
+    uint64_t total_balance = 0;
+    uint64_t all_lido_validators = 0;
+    uint64_t exited_lido_validators = 0;
+    for (std::size_t idx = 0; idx < actual_validator_count; ++idx) {
+        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
+            total_balance += validator_balances[idx];
+            if (validators_exit_epoch[idx] <= epoch) {
+                exited_lido_validators += 1;
+            }
+            if (validators_activation_eligibility_epoch[idx] <= epoch) {
+                all_lido_validators += 1;
+            }
+        }
+    }
+
+    // ... and fail if it doesn't match the passed values
+    if (
+        (total_balance != expected_total_balance) || 
+        (all_lido_validators != expected_all_lido_validators) ||
+        (exited_lido_validators != expected_exited_lido_validators)
+    ) {
+        return false;
+    }
+
+    block_type balances_hash = compute_balances_ssz_merkleization(actual_validator_count, validator_balances);
+    block_type validators_hash = compute_validators_ssz_merkleization(
+        actual_validator_count,
+        validators_pubkeys,
+        validators_withdrawal_credentials,
+        validators_effective_balances,
+        validators_slashed,
+        validators_activation_eligibility_epoch,
+        validators_activation_epoch,
+        validators_exit_epoch,
+        validators_withdrawable_epoch
+    );
+   
+    // Verify validators' and balances' merkle roots match the passed ones
+    // Practically this is a little redundant (the inclusion proof will handle it as well)
+    // but keeping it 
+    if(
+        !is_same(expected_balances_hash, balances_hash) ||
+        !is_same(expected_validators_hash, validators_hash)
+    ) {
+        return false;
+    }
+
+    // Verify validators and balances were included in the beacon state
+    if (
+        !verify_inclusion_proof(balances_hash, beacon_state_hash, balances_hash_inclusion_proof) ||
+        !verify_inclusion_proof(validators_hash, beacon_state_hash, validators_hash_inclusion_proof)
+    ) {
+        return false;
+    }
+
+    // Verify block_state_hash and slot were included in the beacon_block_hash
+    if (
+        !is_same(lift_uint64(slot), beacon_block_fields[0]) ||
+        !is_same(beacon_state_hash, beacon_block_fields[3]) ||
+        !is_same(hash_tree(beacon_block_fields), beacon_block_hash)
+    ) {
+        return false;
+    }
+
+    // All checks passed
+    return true;
 }
