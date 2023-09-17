@@ -54,15 +54,28 @@ const std::array<block_type, 40> precomputed_zero_hashes = {{
 {0xad21b516cbc645ffe34ab5de1c8aef8c_cppui255, 0xd4e7f8d2b51e8e1456adc7563cda206f_cppui255}
 }};
 
-// In prod, should be 38 - log2(VALIDATOR_REGISTRY_LIMIT) - log2(validators_per_leaf) = log2(2**40) - log2(4) = 38
-// But higher powers require progressively more RAM during assignment and proof generation
-constexpr size_t VALIDATORS_TREE_HEIGHT = 20; 
+// This is a constant in Ethereum network
+constexpr std::size_t VALIDATORS_MAX_SIZE_LOG2 = 40;
+// constexpr std::size_t VALIDATORS_MAX_SIZE = 1 << VALIDATORS_MAX_SIZE_LOG2;
+// Validator merkleization is an actual sha2-256 hash, so the full tree height is used
+constexpr std::size_t VALIDATORS_TARGET_TREE_HEIGHT = VALIDATORS_MAX_SIZE_LOG2;
 
-constexpr std::size_t VALIDATORS_COUNT_LOG2 = 6;
 constexpr std::size_t BALANCES_PER_LEAF_LOG2 = 2;
-constexpr std::size_t VALIDATORS_COUNT = 1 << VALIDATORS_COUNT_LOG2; // 2 ** VALIDATORS_COUNT_LOG2
-constexpr std::size_t ACTUAL_VALIDATORS_TREE_HEIGHT = VALIDATORS_COUNT_LOG2 - BALANCES_PER_LEAF;
-constexpr std::size_t ACTUAL_BALANCES_LEAFS_COUNT = 1 << ACTUAL_VALIDATORS_TREE_HEIGHT; // 2 ** VALIDATORS_COUNT_LOG2
+constexpr std::size_t BALANCES_PER_LEAF = 1 << BALANCES_PER_LEAF_LOG2; // // 2 ** BALANCES_PER_LEAF_LOG2
+// Balances are "packed" together (4 balances in one merkle leaf), so their target tree height is smaller by 2
+constexpr std::size_t BALANCES_TARGET_TREE_HEIGHT = VALIDATORS_MAX_SIZE_LOG2 - BALANCES_PER_LEAF_LOG2;
+
+// Theoretically, this should be just VALIDATORS_MAX_SIZE_LOG2; however, this is impractical, as each of these 
+// elements are actually represented by an input value (and variable in the circuit assignment table, and everything else)
+// It basically boils down to vector vs. array - SSZ implementations work with vectors with max size bounded by VALIDATORS_MAX_SIZE,
+// but only carrying actual number of validators (~1M by Oct 2023), while circuit has to use array and thus would carry a full
+// VALIDATORS_MAX_SIZE elements - which is a lot. So we're using a smaller "problem size" to carry (and pass aroung) the necessary
+// minimum of "padding" elemetns.
+constexpr std::size_t PROBLEM_SIZE_LOG2 = 6;
+constexpr std::size_t VALIDATORS_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
+constexpr std::size_t BALANCES_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
+constexpr std::size_t BALANCES_TREE_HEIGHT = PROBLEM_SIZE_LOG2 - BALANCES_PER_LEAF_LOG2;
+constexpr std::size_t BALANCES_LEAFS_COUNT = 1 << BALANCES_TREE_HEIGHT; // 2 ** BALANCES_TREE_HEIGHT
 
 bool is_same(block_type block0, block_type block1){
     return block0[0] == block1[0] && block0[1] == block1[1];
@@ -81,11 +94,12 @@ block_type hash_layer(std::array<block_type, LayerSize> input){
         return hash_layer<LayerSize / 2>(next_layer);
 }
 
-std::array<block_type, ACTUAL_BALANCES_LEAFS_COUNT> pack_balances_into_field_elements(
-    std::array<int64_t, VALIDATORS_COUNT> validator_balances
+template <std::size_t BalancesCount>
+std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_field_elements(
+    std::array<int64_t, BalancesCount> validator_balances
 ) {
-    std::array<block_type, ACTUAL_BALANCES_LEAFS_COUNT> potentially_non_zero_leaves;
-    for (std::size_t i = 0; i < ACTUAL_BALANCES_LEAFS_COUNT; i++) {
+    std::array<block_type, BALANCES_LEAFS_COUNT> leafs;
+    for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
         // MSB first
         decomposed_int64_type first_balance_in_block_bits =
             __builtin_assigner_bit_decomposition64(validator_balances[4*i]);
@@ -101,40 +115,27 @@ std::array<block_type, ACTUAL_BALANCES_LEAFS_COUNT> pack_balances_into_field_ele
         typename field_type::value_type second_block = __builtin_assigner_bit_composition128(
             third_balance_in_block_bits, fourth_balance_in_block_bits);
 
-        potentially_non_zero_leaves[i] = {first_block, second_block};
+        leafs[i] = {first_block, second_block};
     }
-    return potentially_non_zero_leaves;
+    return leafs;
 }
 
-typename block_type mix_in_size(const typename block_type root, size_t size) {
+block_type mix_in_size(const block_type root, size_t size) {
     decomposed_int64_type size_bits = __builtin_assigner_bit_decomposition64(size);
-    block_type size_block = {
+    block_type size_as_block = {
         __builtin_assigner_bit_composition128(size_bits, 0),
         __builtin_assigner_bit_composition128(0, 0)
-    }
+    };
     return hash<hash_type>(root, size_as_block);
 }
 
-template <size_t TreeHeight>
-typename block_type merkelize(
-    std::array<int64_t, VALIDATORS_COUNT> validator_balances,
-) {
-    std::array<block_type, ACTUAL_BALANCES_LEAFS_COUNT> balances_leaves = 
-        pack_balances_into_field_elements(validator_balances);
-    block_type actual_balances_tree_root = hash_layer<ACTUAL_BALANCES_LEAFS_COUNT>(balances_leaves);
+template <size_t TargetTreeHeight, size_t LeafsCount, size_t LeafsTreeHeight>
+block_type merkelize(std::array<block_type, LeafsCount> merkle_leaves) {
+    block_type leaves_tree_root = hash_layer<LeafsCount>(merkle_leaves);
 
-    // "fast-forward" to the target tree height
-    size_t ZerohashesTailHeight = TreeHeight - ACTUAL_VALIDATORS_TREE_HEIGHT;
-    if (TreeHeight == ACTUAL_VALIDATORS_TREE_HEIGHT) {
-        return actual_balances_tree_root;
-    }
-
-    block_type current_hash = actual_balances_tree_root;
-    for (size_t height = ACTUAL_VALIDATORS_TREE_HEIGHT; height < TreeHeight; ++height) {
-        current_hash = hash<hash_type>(
-            tail_hashes[height], 
-            precomputed_zero_hashes[height]
-        );
+    block_type current_hash = leaves_tree_root;
+    for (size_t height = LeafsTreeHeight; height < TargetTreeHeight; ++height) {
+        current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
     }
     return current_hash;
 }
@@ -143,23 +144,28 @@ typename block_type merkelize(
 [[circuit]] 
 bool circuit(
     [[private]] std::array<int64_t, VALIDATORS_COUNT> validator_balances,
+    size_t validator_balances_count, // this is the number of real, non-empty balances in use
     block_type expected_root,
     unsigned long long expected_total_balance
 ) {
+    if (validator_balances_count > VALIDATORS_COUNT) {
+        return false;
+    }
 
     unsigned long long total_balance = 0;
-    for (std::size_t i = 0; i < VALIDATORS_COUNT; i++) {
+    for (std::size_t i = 0; i < validator_balances_count; i++) {
         total_balance += validator_balances[i];
     }
 
+    std::array<block_type, BALANCES_LEAFS_COUNT> balances_leaves = pack_balances_into_field_elements<BALANCES_COUNT>(validator_balances);
+
     /**
-     * In short, this is an implementation of SSZ merkleization, as it is performed for
-     * BeaconState.balances field
+     * This is an implementation of SSZ merkleization, as it is performed for BeaconState.balances field
      */ 
     block_type hash_result = mix_in_size(
-        merkelize<VALIDATORS_TREE_HEIGHT>(validator_balances), 
-        values.size()
+        merkelize<BALANCES_TREE_HEIGHT, BALANCES_LEAFS_COUNT, BALANCES_TARGET_TREE_HEIGHT>(balances_leaves), 
+        validator_balances_count
     );
     
-    return (is_same(expected_root, root) && (expected_total_balance == total_balance));
+    return (is_same(expected_root, hash_result) && (expected_total_balance == total_balance));
 }
