@@ -1,4 +1,4 @@
- #include <nil/crypto3/hash/algorithm/hash.hpp>
+#include <nil/crypto3/hash/algorithm/hash.hpp>
 #include <nil/crypto3/hash/sha2.hpp>
 #include <cstdint>
 
@@ -82,6 +82,9 @@ constexpr std::size_t VALIDATOR_FIELDS = 8;
 constexpr std::size_t BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH = 6;
 constexpr std::size_t BEACON_BLOCK_FIELDS_COUNT = 5;
 
+constexpr bool BYTE_ORDER_MSB = true;
+constexpr bool BYTE_ORDER_LSB = false;
+
 bool is_same(block_type block0, block_type block1){
     return block0[0] == block1[0] && block0[1] == block1[1];
 }
@@ -95,8 +98,7 @@ block_type hash_layer(std::array<block_type, LayerSize> input, size_t layer){
         next_layer[leaf_index] = hash<hash_type>(input[2 * leaf_index], input[2 * leaf_index + 1]);
     }
     if (LayerSize % 2 != 0) {
-        // next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[layer]);
-        next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[2]);
+        next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[layer]);
     }
     if (LayerSize == 2)
         return next_layer[0];
@@ -117,18 +119,18 @@ std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_fie
     for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
         // MSB first
         decomposed_int64_type first_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i]);
+            __builtin_assigner_bit_decomposition64(validator_balances[4*i], BYTE_ORDER_LSB);
         decomposed_int64_type second_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+1]);
+            __builtin_assigner_bit_decomposition64(validator_balances[4*i+1], BYTE_ORDER_LSB);
         decomposed_int64_type third_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+2]);
+            __builtin_assigner_bit_decomposition64(validator_balances[4*i+2], BYTE_ORDER_LSB);
         decomposed_int64_type fourth_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+3]);
+            __builtin_assigner_bit_decomposition64(validator_balances[4*i+3], BYTE_ORDER_LSB);
 
         typename field_type::value_type first_block = __builtin_assigner_bit_composition128(
-            first_balance_in_block_bits, second_balance_in_block_bits);
+            first_balance_in_block_bits, second_balance_in_block_bits, BYTE_ORDER_LSB);
         typename field_type::value_type second_block = __builtin_assigner_bit_composition128(
-            third_balance_in_block_bits, fourth_balance_in_block_bits);
+            third_balance_in_block_bits, fourth_balance_in_block_bits, BYTE_ORDER_LSB);
 
         leafs[i] = {first_block, second_block};
     }
@@ -137,7 +139,9 @@ std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_fie
 
 block_type lift_uint64(uint64_t value) {
     return {
-        __builtin_assigner_bit_composition128(__builtin_assigner_bit_decomposition64(value), 0),
+        __builtin_assigner_bit_composition128(
+            __builtin_assigner_bit_decomposition64(value, BYTE_ORDER_LSB), 0, BYTE_ORDER_LSB
+        ),
         0
     };
 }
@@ -152,10 +156,7 @@ block_type merkelize(std::array<block_type, LeafsCount> merkle_leaves) {
 
     block_type current_hash = leaves_tree_root;
     for (size_t height = LeafsTreeHeight; height < TargetTreeHeight; ++height) {
-        // current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
-        // The above is correct, but crashes assigner - something is wrong with zerohashes
-        // The version above optimizes out zerohashes and "unblocks" us temporarily
-        current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[2]);
+        current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
     }
     return current_hash;
 }
