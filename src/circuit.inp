@@ -89,20 +89,18 @@
    { "vector": [{"field" : "326522724692461750427768532537390503835" }, { "field": "89059515727727869117346995944635890507" }] },
    { "vector": [{"field" : "326522724692461750427768532537390503835" }, { "field": "89059515727727869117346995944635890507" }] },
    { "array": [
+      { "vector": [ { "field": 1 }, { "field": 2 }] }, 
       { "vector": [ { "field": 3 }, { "field": 4 }] }, 
       { "vector": [ { "field": 5 }, { "field": 6 }] }, 
       { "vector": [ { "field": 7 }, { "field": 8 }] }, 
-      { "vector": [ { "field": 9 }, { "field": 10 }] }, 
-      { "vector": [ { "field": 1 }, { "field": 2 }] }, 
-      { "vector": [ { "field": 11 }, { "field": 12 }] }
+      { "vector": [ { "field": 9 }, { "field": 10 }] }
    ]},
    { "array": [
       { "vector": [ { "field": 10 }, { "field": 20 }] }, 
       { "vector": [ { "field": 30 }, { "field": 40 }] }, 
       { "vector": [ { "field": 50 }, { "field": 60 }] }, 
       { "vector": [ { "field": 70 }, { "field": 80 }] }, 
-      { "vector": [ { "field": 90 }, { "field": 100 }] }, 
-      { "vector": [ { "field": 110 }, { "field": 120 }] }
+      { "vector": [ { "field": 90 }, { "field": 100 }] }
    ]},
    { "array": [
       { "vector": [ { "field": 100 }, { "field": 200 }] }, 

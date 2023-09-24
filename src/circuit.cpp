@@ -79,7 +79,10 @@ constexpr std::size_t BALANCES_TREE_HEIGHT = PROBLEM_SIZE_LOG2 - BALANCES_PER_LE
 constexpr std::size_t BALANCES_LEAFS_COUNT = BALANCES_COUNT / BALANCES_PER_LEAF;
 
 constexpr std::size_t VALIDATOR_FIELDS = 8;
-constexpr std::size_t BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH = 6;
+constexpr std::size_t BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH = 5;
+constexpr std::size_t VALIDATORS_FIELD_INDEX = 11;
+constexpr std::size_t BALANCES_FIELD_INDEX = 12;
+
 constexpr std::size_t BEACON_BLOCK_FIELDS_COUNT = 5;
 
 constexpr bool BYTE_ORDER_MSB = true;
@@ -209,10 +212,16 @@ block_type compute_validators_ssz_merkleization(
 }
 
 template <size_t ProofSize>
-bool verify_inclusion_proof(block_type field_hash, block_type merkle_root, std::array<block_type, ProofSize> inclusion_proof) {
+bool verify_inclusion_proof(size_t field_index, block_type field_hash, block_type merkle_root, std::array<block_type, ProofSize> inclusion_proof) {
+    size_t cur_index = field_index;
     block_type current_hash = field_hash;
-    for (int idx = 0; idx < ProofSize; ++idx) {
-        current_hash = hash<hash_type>(current_hash, inclusion_proof[idx]);
+    for (block_type inclusion_step: inclusion_proof) {
+        if (cur_index % 2 == 0) {
+            current_hash = hash<hash_type>(current_hash, inclusion_step);
+        } else {
+            current_hash = hash<hash_type>(inclusion_step, current_hash);            
+        }
+        cur_index = cur_index / 2;
     }
     return is_same(current_hash, merkle_root);
 }
@@ -235,13 +244,13 @@ bool circuit(
     uint64_t expected_total_balance,
     uint64_t expected_all_lido_validators,
     uint64_t expected_exited_lido_validators,
-    block_type expected_balances_hash,
-    block_type expected_validators_hash,
+    [[private]] block_type expected_balances_hash,
+    [[private]] block_type expected_validators_hash,
     block_type beacon_state_hash,
     block_type beacon_block_hash,
     [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> balances_hash_inclusion_proof,
     [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> validators_hash_inclusion_proof,
-    std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
+    [[private]] std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
 ) {
     // Sanity-checking input
     if (
@@ -292,7 +301,7 @@ bool circuit(
    
     // Verify validators' and balances' merkle roots match the passed ones
     // Practically this is a little redundant (the inclusion proof will handle it as well)
-    // but keeping it 
+    // but keeping it for visibility/ease of debugging
     if(
         !is_same(expected_balances_hash, balances_hash) ||
         !is_same(expected_validators_hash, validators_hash)
@@ -302,8 +311,8 @@ bool circuit(
 
     // Verify validators and balances were included in the beacon state
     if (
-        !verify_inclusion_proof(balances_hash, beacon_state_hash, balances_hash_inclusion_proof) ||
-        !verify_inclusion_proof(validators_hash, beacon_state_hash, validators_hash_inclusion_proof)
+        !verify_inclusion_proof(BALANCES_FIELD_INDEX, balances_hash, beacon_state_hash, balances_hash_inclusion_proof) ||
+        !verify_inclusion_proof(VALIDATORS_FIELD_INDEX, validators_hash, beacon_state_hash, validators_hash_inclusion_proof)
     ) {
         return false;
     }
