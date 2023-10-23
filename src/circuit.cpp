@@ -253,13 +253,12 @@ bool circuit(
     [[private]] std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
 ) {
     // Sanity-checking input
-    if (
-        (actual_validator_count > VALIDATORS_COUNT) ||
-        (slot < epoch * 32) ||
-        (slot >= (epoch + 1) * 32)
-    ) {
-        return false;
-    }
+    bool inputSanityCheck = (
+        (actual_validator_count <= VALIDATORS_COUNT) &&
+        (slot >= epoch * 32) &&
+        (slot < (epoch + 1) * 32)
+    );
+    __builtin_assigner_exit_check(inputSanityCheck);
 
     // Independently compute report...
     uint64_t total_balance = 0;
@@ -278,13 +277,12 @@ bool circuit(
     }
 
     // ... and fail if it doesn't match the passed values
-    if (
-        (total_balance != expected_total_balance) || 
-        (all_lido_validators != expected_all_lido_validators) ||
-        (exited_lido_validators != expected_exited_lido_validators)
-    ) {
-        return false;
-    }
+    bool reportedValuesMatchComputed = (
+        (total_balance == expected_total_balance) &&
+        (all_lido_validators == expected_all_lido_validators) &&
+        (exited_lido_validators == expected_exited_lido_validators)
+    );
+    __builtin_assigner_exit_check(reportedValuesMatchComputed);
 
     block_type balances_hash = compute_balances_ssz_merkleization(actual_validator_count, validator_balances);
     block_type validators_hash = compute_validators_ssz_merkleization(
@@ -302,29 +300,26 @@ bool circuit(
     // Verify validators' and balances' merkle roots match the passed ones
     // Practically this is a little redundant (the inclusion proof will handle it as well)
     // but keeping it for visibility/ease of debugging
-    if(
-        !is_same(expected_balances_hash, balances_hash) ||
-        !is_same(expected_validators_hash, validators_hash)
-    ) {
-        return false;
-    }
+    bool merkleHashesMatch = (
+        is_same(expected_balances_hash, balances_hash) &&
+        is_same(expected_validators_hash, validators_hash)
+    );
+    __builtin_assigner_exit_check(merkleHashesMatch);
 
     // Verify validators and balances were included in the beacon state
-    if (
-        !verify_inclusion_proof(BALANCES_FIELD_INDEX, balances_hash, beacon_state_hash, balances_hash_inclusion_proof) ||
-        !verify_inclusion_proof(VALIDATORS_FIELD_INDEX, validators_hash, beacon_state_hash, validators_hash_inclusion_proof)
-    ) {
-        return false;
-    }
+    bool beaconStateInclusionCheck = (
+        verify_inclusion_proof(BALANCES_FIELD_INDEX, balances_hash, beacon_state_hash, balances_hash_inclusion_proof) &&
+        verify_inclusion_proof(VALIDATORS_FIELD_INDEX, validators_hash, beacon_state_hash, validators_hash_inclusion_proof)
+    );
+    __builtin_assigner_exit_check(beaconStateInclusionCheck);
 
     // Verify block_state_hash and slot were included in the beacon_block_hash
-    if (
-        !is_same(lift_uint64(slot), beacon_block_fields[0]) ||
-        !is_same(beacon_state_hash, beacon_block_fields[3]) ||
-        !is_same(hash_tree(beacon_block_fields), beacon_block_hash)
-    ) {
-        return false;
-    }
+    bool beaconBlockInclusionCheck = (
+        is_same(lift_uint64(slot), beacon_block_fields[0]) &&
+        is_same(beacon_state_hash, beacon_block_fields[3]) &&
+        is_same(hash_tree(beacon_block_fields), beacon_block_hash)
+    );
+    __builtin_assigner_exit_check(beaconStateInclusionCheck);
 
     // All checks passed
     return true;
