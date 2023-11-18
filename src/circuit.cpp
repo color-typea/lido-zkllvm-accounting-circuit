@@ -8,8 +8,6 @@ using hash_type = hashes::sha2<256>;
 using block_type = hash_type::block_type;
 using field_type = algebra::curves::pallas::base_field_type;
 
-typedef __zkllvm_field_pallas_base __attribute__((ext_vector_type(64))) decomposed_int64_type;
-
 // zerohashes[0] = b'000000000...000' (32 bytes total), zerohashes[i+1] = sha2<256>(zerohasehs[i])
 const std::array<block_type, 40> precomputed_zero_hashes = {{
 {0x00000000000000000000000000000000_cppui255, 0x00000000000000000000000000000000_cppui255},
@@ -120,31 +118,28 @@ std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_fie
 ) {
     std::array<block_type, BALANCES_LEAFS_COUNT> leafs;
     for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
-        // MSB first
-        decomposed_int64_type first_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i], BYTE_ORDER_LSB);
-        decomposed_int64_type second_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+1], BYTE_ORDER_LSB);
-        decomposed_int64_type third_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+2], BYTE_ORDER_LSB);
-        decomposed_int64_type fourth_balance_in_block_bits =
-            __builtin_assigner_bit_decomposition64(validator_balances[4*i+3], BYTE_ORDER_LSB);
+        std::array<typename field_type::value_type, 128> decomposed_block_1;
+        std::array<typename field_type::value_type, 128> decomposed_block_2;
 
-        typename field_type::value_type first_block = __builtin_assigner_bit_composition128(
-            first_balance_in_block_bits, second_balance_in_block_bits, BYTE_ORDER_LSB);
-        typename field_type::value_type second_block = __builtin_assigner_bit_composition128(
-            third_balance_in_block_bits, fourth_balance_in_block_bits, BYTE_ORDER_LSB);
+        __builtin_assigner_bit_decomposition(decomposed_block_1.data()     , 64, validator_balances[4*i+0], BYTE_ORDER_LSB);
+        __builtin_assigner_bit_decomposition(decomposed_block_1.data() + 64, 64, validator_balances[4*i+1], BYTE_ORDER_LSB);
+        __builtin_assigner_bit_decomposition(decomposed_block_2.data()     , 64, validator_balances[4*i+2], BYTE_ORDER_LSB);
+        __builtin_assigner_bit_decomposition(decomposed_block_2.data() + 64, 64, validator_balances[4*i+3], BYTE_ORDER_LSB);
 
-        leafs[i] = {first_block, second_block};
+        leafs[i] = {
+            __builtin_assigner_bit_composition(decomposed_block_1.data(), 128, BYTE_ORDER_LSB), 
+            __builtin_assigner_bit_composition(decomposed_block_2.data(), 128, BYTE_ORDER_LSB)
+        };
     }
     return leafs;
 }
 
 block_type lift_uint64(uint64_t value) {
+    std::array<typename field_type::value_type, 128> decomposed_block;
+    __builtin_assigner_bit_decomposition(decomposed_block.data()     , 64, value      , BYTE_ORDER_LSB);
+    __builtin_assigner_bit_decomposition(decomposed_block.data() + 64, 64, uint64_t(0), BYTE_ORDER_LSB);
     return {
-        __builtin_assigner_bit_composition128(
-            __builtin_assigner_bit_decomposition64(value, BYTE_ORDER_LSB), 0, BYTE_ORDER_LSB
-        ),
+        __builtin_assigner_bit_composition(decomposed_block.data(), 128, BYTE_ORDER_LSB),
         0
     };
 }
@@ -170,9 +165,6 @@ block_type compute_balances_ssz_merkleization(
 ) {
     std::array<block_type, BALANCES_LEAFS_COUNT> balances_leaves = pack_balances_into_field_elements<BALANCES_COUNT>(validator_balances);
 
-    /**
-     * This is an implementation of SSZ merkleization, as it is performed for BeaconState.balances field
-     */ 
     return mix_in_size(
         merkelize<BALANCES_TARGET_TREE_HEIGHT, BALANCES_LEAFS_COUNT, BALANCES_TREE_HEIGHT>(balances_leaves), 
         actual_validator_count
