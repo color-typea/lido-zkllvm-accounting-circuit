@@ -311,7 +311,7 @@ bool circuit(
         is_same(beacon_state_hash, beacon_block_fields[3]) &&
         is_same(hash_tree(beacon_block_fields), beacon_block_hash)
     );
-    __builtin_assigner_exit_check(beaconStateInclusionCheck);
+    __builtin_assigner_exit_check(beaconBlockInclusionCheck);
 
     // All checks passed
     return true;
