@@ -90,6 +90,51 @@ bool is_same(block_type block0, block_type block1){
     return block0[0] == block1[0] && block0[1] == block1[1];
 }
 
+// Wish it oculd be an opaque type, but at least for documentation purposes
+typedef uint64_t_le = uint64_t;
+typedef uint64_t_be = uint64_t;
+
+uint64_t changeEndianness(uint64_t val) {
+    uint64_t result;
+    result += ((val >> (0 * 8)) - ((val >> (1 * 8)) << 8)) << (7 * 8);
+    result += ((val >> (1 * 8)) - ((val >> (2 * 8)) << 8)) << (6 * 8);
+    result += ((val >> (2 * 8)) - ((val >> (3 * 8)) << 8)) << (5 * 8);
+    result += ((val >> (3 * 8)) - ((val >> (4 * 8)) << 8)) << (4 * 8);
+    result += ((val >> (4 * 8)) - ((val >> (5 * 8)) << 8)) << (3 * 8);
+    result += ((val >> (5 * 8)) - ((val >> (6 * 8)) << 8)) << (2 * 8);
+    result += ((val >> (6 * 8)) - ((val >> (7 * 8)) << 8)) << (1 * 8);
+    result += ((val >> (7 * 8))                          ) << (0 * 8);
+    return result;
+}
+
+uint64_t_be toBigEndian(uint64_t_le val) {
+    return changeEndianness(val);
+}
+uint64_t_le toLittleEndian(uint64_t_be val) {
+    return changeEndianness(val);
+}
+
+field_type toSha256Field(uint64_t_le lower, uint64_t_le higher) {
+    std::array<field_type::value_type, 128> decomposed_block;
+    __builtin_assigner_bit_decomposition(decomposed_block.data()     , 64, higher, true);
+    __builtin_assigner_bit_decomposition(decomposed_block.data() + 64, 64, lower, true);
+    return __builtin_assigner_bit_composition(decomposed_block.data(), 128, true);
+}
+
+block_type lift_uint64(uint64_t_be val) {
+    return {
+        toSha256Field(toLittleEndian(val), 0),
+        0
+    };
+}
+
+block_type pack_four(uint64_t_be val1, uint64_t_be val2, uint64_t_be val3, uint64_t_be val4) {
+    return {
+        toSha256Field(toLittleEndian(val1), toLittleEndian(val2)),
+        toSha256Field(toLittleEndian(val3), toLittleEndian(val4)),
+    }
+}
+
 template <std::size_t LayerSize>
 block_type hash_layer(std::array<block_type, LayerSize> input, size_t layer){
     constexpr size_t NextLayerSize = (LayerSize % 2 == 0) ? LayerSize / 2 : (LayerSize / 2 + 1);
@@ -114,34 +159,18 @@ block_type hash_tree(std::array<block_type, LayerSize> input){
 
 template <std::size_t BalancesCount>
 std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_field_elements(
-    std::array<uint64_t, BalancesCount> validator_balances
+    std::array<uint64_t_be, BalancesCount> balances
 ) {
     std::array<block_type, BALANCES_LEAFS_COUNT> leafs;
     for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
-        std::array<typename field_type::value_type, 128> decomposed_block_1;
-        std::array<typename field_type::value_type, 128> decomposed_block_2;
-
-        __builtin_assigner_bit_decomposition(decomposed_block_1.data()     , 64, validator_balances[4*i+0], BYTE_ORDER_LSB);
-        __builtin_assigner_bit_decomposition(decomposed_block_1.data() + 64, 64, validator_balances[4*i+1], BYTE_ORDER_LSB);
-        __builtin_assigner_bit_decomposition(decomposed_block_2.data()     , 64, validator_balances[4*i+2], BYTE_ORDER_LSB);
-        __builtin_assigner_bit_decomposition(decomposed_block_2.data() + 64, 64, validator_balances[4*i+3], BYTE_ORDER_LSB);
-
-        leafs[i] = {
-            __builtin_assigner_bit_composition(decomposed_block_1.data(), 128, BYTE_ORDER_LSB), 
-            __builtin_assigner_bit_composition(decomposed_block_2.data(), 128, BYTE_ORDER_LSB)
-        };
+        leafs[i] = pack_four(
+            balances[4*i+0],
+            balances[4*i+1],
+            balances[4*i+2],
+            balances[4*i+3],
+        );
     }
     return leafs;
-}
-
-block_type lift_uint64(uint64_t value) {
-    std::array<typename field_type::value_type, 128> decomposed_block;
-    __builtin_assigner_bit_decomposition(decomposed_block.data()     , 64, value      , BYTE_ORDER_LSB);
-    __builtin_assigner_bit_decomposition(decomposed_block.data() + 64, 64, uint64_t(0), BYTE_ORDER_LSB);
-    return {
-        __builtin_assigner_bit_composition(decomposed_block.data(), 128, BYTE_ORDER_LSB),
-        0
-    };
 }
 
 block_type mix_in_size(const block_type root, size_t size) {
@@ -161,7 +190,7 @@ block_type merkelize(std::array<block_type, LeafsCount> merkle_leaves) {
 
 block_type compute_balances_ssz_merkleization(
     size_t actual_validator_count,
-    std::array<uint64_t, BALANCES_COUNT> validator_balances
+    std::array<uint64_t_be, BALANCES_COUNT> validator_balances
 ) {
     std::array<block_type, BALANCES_LEAFS_COUNT> balances_leaves = pack_balances_into_field_elements<BALANCES_COUNT>(validator_balances);
 
@@ -175,12 +204,12 @@ block_type compute_validators_ssz_merkleization(
     size_t actual_validator_count,
     std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
     std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_effective_balances,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_slashed,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_activation_epoch,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_exit_epoch,
-    std::array<uint64_t, VALIDATORS_COUNT> validators_withdrawable_epoch
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_effective_balances,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_slashed,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_epoch,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_exit_epoch,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validators_withdrawable_epoch
 ) {
     std::array<block_type, VALIDATORS_COUNT> validator_leaves;
 
@@ -221,21 +250,21 @@ bool verify_inclusion_proof(size_t field_index, block_type field_hash, block_typ
 [[circuit]] 
 bool circuit(
     [[private]] size_t actual_validator_count, // this is the number of real, non-empty validators and balances in use
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validator_balances,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validator_balances,
     [[private]] std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
     [[private]] std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_effective_balances,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_slashed,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_activation_epoch,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_exit_epoch,
-    [[private]] std::array<uint64_t, VALIDATORS_COUNT> validators_withdrawable_epoch,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_effective_balances,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_slashed,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_epoch,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_exit_epoch,
+    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_withdrawable_epoch,
     block_type lido_withdrawal_credentials,
-    uint64_t slot,
-    uint64_t epoch,
-    uint64_t expected_total_balance,
-    uint64_t expected_all_lido_validators,
-    uint64_t expected_exited_lido_validators,
+    uint64_t_be slot,
+    uint64_t_be epoch,
+    uint64_t_be expected_total_balance,
+    uint64_t_be expected_all_lido_validators,
+    uint64_t_be expected_exited_lido_validators,
     [[private]] block_type expected_balances_hash,
     [[private]] block_type expected_validators_hash,
     block_type beacon_state_hash,
@@ -253,9 +282,9 @@ bool circuit(
     __builtin_assigner_exit_check(inputSanityCheck);
 
     // Independently compute report...
-    uint64_t total_balance = 0;
-    uint64_t all_lido_validators = 0;
-    uint64_t exited_lido_validators = 0;
+    uint64_t_be total_balance = 0;
+    uint64_t_be all_lido_validators = 0;
+    uint64_t_be exited_lido_validators = 0;
     for (std::size_t idx = 0; idx < actual_validator_count; ++idx) {
         if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
             total_balance += validator_balances[idx];
