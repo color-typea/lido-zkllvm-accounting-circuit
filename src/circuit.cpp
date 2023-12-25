@@ -1,12 +1,11 @@
 #include <nil/crypto3/hash/algorithm/hash.hpp>
 #include <nil/crypto3/hash/sha2.hpp>
-#include <cstdint>
 
 using namespace nil::crypto3;
 
 using hash_type = hashes::sha2<256>;
 using block_type = hash_type::block_type;
-using field_type = algebra::curves::pallas::base_field_type;
+using field_type = algebra::curves::pallas::base_field_type::value_type;
 
 // zerohashes[0] = b'000000000...000' (32 bytes total), zerohashes[i+1] = sha2<256>(zerohasehs[i])
 const std::array<block_type, 40> precomputed_zero_hashes = {{
@@ -70,11 +69,20 @@ constexpr std::size_t BALANCES_TARGET_TREE_HEIGHT = VALIDATORS_MAX_SIZE_LOG2 - B
 // VALIDATORS_MAX_SIZE elements - which is a lot. So we're using a smaller "problem size" to carry (and pass aroung) the necessary
 // minimum of "padding" elemetns.
 constexpr std::size_t PROBLEM_SIZE_LOG2 = 4;
+constexpr std::size_t SUBPROBLEM_COUNT_LOG2 = 2; // further slicing the problem into smaller chunks - map-reduce style
+constexpr std::size_t SUBPROBLEM_COUNT = 1 << SUBPROBLEM_COUNT_LOG2;
+constexpr std::size_t SUBPROBLEM_SIZE_LOG2 = PROBLEM_SIZE_LOG2 - SUBPROBLEM_COUNT_LOG2;
+constexpr std::size_t SUBPROBLEM_SIZE = 1 << SUBPROBLEM_SIZE_LOG2; 
+constexpr std::size_t SUBPROBLEM_BALANCES_LEAFS_COUNT_LOG2 = SUBPROBLEM_SIZE_LOG2 - BALANCES_PER_LEAF_LOG2;
+constexpr std::size_t SUBPROBLEM_BALANCES_LEAFS_COUNT = 1 << SUBPROBLEM_BALANCES_LEAFS_COUNT_LOG2;
+
 constexpr std::size_t VALIDATORS_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
 constexpr std::size_t VALIDATORS_TREE_HEIGHT = PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
 constexpr std::size_t BALANCES_COUNT = 1 << PROBLEM_SIZE_LOG2; // 2 ** PROBLEM_SIZE_LOG2
 constexpr std::size_t BALANCES_TREE_HEIGHT = PROBLEM_SIZE_LOG2 - BALANCES_PER_LEAF_LOG2;
 constexpr std::size_t BALANCES_LEAFS_COUNT = BALANCES_COUNT / BALANCES_PER_LEAF;
+
+static_assert(BALANCES_TREE_HEIGHT == SUBPROBLEM_BALANCES_LEAFS_COUNT_LOG2 + SUBPROBLEM_COUNT_LOG2);
 
 constexpr std::size_t VALIDATOR_FIELDS = 8;
 constexpr std::size_t BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH = 5;
@@ -90,9 +98,9 @@ bool is_same(block_type block0, block_type block1){
     return block0[0] == block1[0] && block0[1] == block1[1];
 }
 
-// Wish it oculd be an opaque type, but at least for documentation purposes
-typedef uint64_t_le = uint64_t;
-typedef uint64_t_be = uint64_t;
+// Wish it could be an opaque type, but at least for documentation purposes
+using uint64_t_le = uint64_t;
+using uint64_t_be = uint64_t;
 
 uint64_t changeEndianness(uint64_t val) {
     uint64_t result;
@@ -115,12 +123,11 @@ uint64_t_le toLittleEndian(uint64_t_be val) {
 }
 
 field_type toSha256Field(uint64_t_le lower, uint64_t_le higher) {
-    std::array<field_type::value_type, 128> decomposed_block;
+    std::array<field_type, 128> decomposed_block;
     __builtin_assigner_bit_decomposition(decomposed_block.data()     , 64, higher, true);
     __builtin_assigner_bit_decomposition(decomposed_block.data() + 64, 64, lower, true);
     return __builtin_assigner_bit_composition(decomposed_block.data(), 128, true);
 }
-
 block_type lift_uint64(uint64_t_be val) {
     return {
         toSha256Field(toLittleEndian(val), 0),
@@ -132,7 +139,7 @@ block_type pack_four(uint64_t_be val1, uint64_t_be val2, uint64_t_be val3, uint6
     return {
         toSha256Field(toLittleEndian(val1), toLittleEndian(val2)),
         toSha256Field(toLittleEndian(val3), toLittleEndian(val4)),
-    }
+    };
 }
 
 template <std::size_t LayerSize>
@@ -157,51 +164,37 @@ block_type hash_tree(std::array<block_type, LayerSize> input){
     return hash_layer(input, 0);
 }
 
-template <std::size_t BalancesCount>
-std::array<block_type, BalancesCount / BALANCES_PER_LEAF> pack_balances_into_field_elements(
-    std::array<uint64_t_be, BalancesCount> balances
-) {
-    std::array<block_type, BALANCES_LEAFS_COUNT> leafs;
-    for (std::size_t i = 0; i < BALANCES_LEAFS_COUNT; i++) {
-        leafs[i] = pack_four(
-            balances[4*i+0],
-            balances[4*i+1],
-            balances[4*i+2],
-            balances[4*i+3],
-        );
-    }
-    return leafs;
-}
 
 block_type mix_in_size(const block_type root, size_t size) {
     return hash<hash_type>(root, lift_uint64(size));
 }
 
-template <size_t TargetTreeHeight, size_t LeafsCount, size_t LeafsTreeHeight>
-block_type merkelize(std::array<block_type, LeafsCount> merkle_leaves) {
-    block_type leaves_tree_root = hash_tree<LeafsCount>(merkle_leaves);
-
-    block_type current_hash = leaves_tree_root;
-    for (size_t height = LeafsTreeHeight; height < TargetTreeHeight; ++height) {
+block_type expand_merkle_to_height(block_type merkle, size_t current_height, size_t target_height) {
+    block_type current_hash = merkle;
+    for (size_t height = current_height; height < target_height; ++height) {
         current_hash = hash<hash_type>(current_hash, precomputed_zero_hashes[height]);
     }
     return current_hash;
 }
 
-block_type compute_balances_ssz_merkleization(
-    size_t actual_validator_count,
-    std::array<uint64_t_be, BALANCES_COUNT> validator_balances
+block_type partial_balances_merkle(
+    size_t start_index,
+    std::array<uint64_t_be, VALIDATORS_COUNT> validator_balances
 ) {
-    std::array<block_type, BALANCES_LEAFS_COUNT> balances_leaves = pack_balances_into_field_elements<BALANCES_COUNT>(validator_balances);
-
-    return mix_in_size(
-        merkelize<BALANCES_TARGET_TREE_HEIGHT, BALANCES_LEAFS_COUNT, BALANCES_TREE_HEIGHT>(balances_leaves), 
-        actual_validator_count
-    );
+    std::array<block_type, SUBPROBLEM_BALANCES_LEAFS_COUNT> balances_leaves;
+    for (std::size_t i = 0; i < SUBPROBLEM_BALANCES_LEAFS_COUNT; ++i) {
+        balances_leaves[i] = pack_four(
+            validator_balances[start_index+4*i+0],
+            validator_balances[start_index+4*i+1],
+            validator_balances[start_index+4*i+2],
+            validator_balances[start_index+4*i+3]
+        );
+    }
+    return hash_tree<SUBPROBLEM_BALANCES_LEAFS_COUNT>(balances_leaves);
 }
 
-block_type compute_validators_ssz_merkleization(
-    size_t actual_validator_count,
+block_type partial_validators_merkle(
+    size_t start_index,
     std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
     std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
     std::array<uint64_t_be, VALIDATORS_COUNT> validators_effective_balances,
@@ -211,10 +204,11 @@ block_type compute_validators_ssz_merkleization(
     std::array<uint64_t_be, VALIDATORS_COUNT> validators_exit_epoch,
     std::array<uint64_t_be, VALIDATORS_COUNT> validators_withdrawable_epoch
 ) {
-    std::array<block_type, VALIDATORS_COUNT> validator_leaves;
+    std::array<block_type, SUBPROBLEM_SIZE> validator_leaves;
 
-    for (size_t validator_idx; validator_idx < VALIDATORS_COUNT; ++validator_idx) {
-        validator_leaves[validator_idx] = hash_tree<8>({
+    for (size_t idx = 0; idx < VALIDATORS_COUNT; ++idx) {
+        size_t validator_idx = start_index + idx;
+        validator_leaves[idx] = hash_tree<8>({
             validators_pubkeys[validator_idx],
             validators_withdrawal_credentials[validator_idx],
             lift_uint64(validators_effective_balances[validator_idx]),
@@ -226,10 +220,7 @@ block_type compute_validators_ssz_merkleization(
         });
     }
 
-    return mix_in_size(
-        merkelize<VALIDATORS_TARGET_TREE_HEIGHT, VALIDATORS_COUNT, VALIDATORS_TREE_HEIGHT>(validator_leaves), 
-        actual_validator_count
-    );
+    return hash_tree<SUBPROBLEM_SIZE>(validator_leaves);
 }
 
 template <size_t ProofSize>
@@ -249,29 +240,29 @@ bool verify_inclusion_proof(size_t field_index, block_type field_hash, block_typ
 
 [[circuit]] 
 bool circuit(
-    [[private]] size_t actual_validator_count, // this is the number of real, non-empty validators and balances in use
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validator_balances,
-    [[private]] std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
-    [[private]] std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_effective_balances,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_slashed,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_epoch,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_exit_epoch,
-    [[private]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_withdrawable_epoch,
+    [[private_input]] size_t actual_validator_count, // this is the number of real, non-empty validators and balances in use
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validator_balances,
+    [[private_input]] std::array<block_type, VALIDATORS_COUNT> validators_pubkeys,
+    [[private_input]] std::array<block_type, VALIDATORS_COUNT> validators_withdrawal_credentials,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_effective_balances,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_slashed,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_eligibility_epoch,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_activation_epoch,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_exit_epoch,
+    [[private_input]] std::array<uint64_t_be, VALIDATORS_COUNT> validators_withdrawable_epoch,
     block_type lido_withdrawal_credentials,
     uint64_t_be slot,
     uint64_t_be epoch,
     uint64_t_be expected_total_balance,
     uint64_t_be expected_all_lido_validators,
     uint64_t_be expected_exited_lido_validators,
-    [[private]] block_type expected_balances_hash,
-    [[private]] block_type expected_validators_hash,
+    [[private_input]] block_type expected_balances_hash,
+    [[private_input]] block_type expected_validators_hash,
     block_type beacon_state_hash,
     block_type beacon_block_hash,
-    [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> balances_hash_inclusion_proof,
-    [[private]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> validators_hash_inclusion_proof,
-    [[private]] std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
+    [[private_input]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> balances_hash_inclusion_proof,
+    [[private_input]] std::array<block_type, BEACON_STATE_FIELD_INCLUSION_PROOF_LENGTH> validators_hash_inclusion_proof,
+    [[private_input]] std::array<block_type, BEACON_BLOCK_FIELDS_COUNT> beacon_block_fields
 ) {
     // Sanity-checking input
     bool inputSanityCheck = (
@@ -281,33 +272,38 @@ bool circuit(
     );
     __builtin_assigner_exit_check(inputSanityCheck);
 
-    // Independently compute report...
-    uint64_t_be total_balance = 0;
-    uint64_t_be all_lido_validators = 0;
-    uint64_t_be exited_lido_validators = 0;
-    for (std::size_t idx = 0; idx < actual_validator_count; ++idx) {
+    std::array<uint64_t, SUBPROBLEM_COUNT> partial_balances;
+    std::array<uint64_t, SUBPROBLEM_COUNT> partial_all_lido_validators;
+    std::array<uint64_t, SUBPROBLEM_COUNT> partial_exited_lido_validators;
+    std::array<block_type, SUBPROBLEM_COUNT> partial_balance_hashes;
+    std::array<block_type, SUBPROBLEM_COUNT> partial_validator_hashes;
+
+    // Parallelizeable part - "map"
+#pragma zk_multi_prover 0
+{
+    size_t subproblem_idx = 0;
+    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
+    uint64_t partial_balance = 0;
+    uint64_t partial_all_lido_validator = 0;
+    uint64_t partial_exited_lido_validator = 0;
+
+    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
         if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
-            total_balance += validator_balances[idx];
+            partial_balance += validator_balances[idx];
+            partial_all_lido_validator += 1;
             if (validators_exit_epoch[idx] <= epoch) {
-                exited_lido_validators += 1;
-            }
-            if (validators_activation_eligibility_epoch[idx] <= epoch) {
-                all_lido_validators += 1;
+                partial_exited_lido_validator += 1;
             }
         }
     }
 
-    // ... and fail if it doesn't match the passed values
-    bool reportedValuesMatchComputed = (
-        (total_balance == expected_total_balance) &&
-        (all_lido_validators == expected_all_lido_validators) &&
-        (exited_lido_validators == expected_exited_lido_validators)
-    );
-    __builtin_assigner_exit_check(reportedValuesMatchComputed);
+    partial_balances[subproblem_idx] = partial_balance;
+    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
+    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
 
-    block_type balances_hash = compute_balances_ssz_merkleization(actual_validator_count, validator_balances);
-    block_type validators_hash = compute_validators_ssz_merkleization(
-        actual_validator_count,
+    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, validator_balances);
+    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
+        start_index,
         validators_pubkeys,
         validators_withdrawal_credentials,
         validators_effective_balances,
@@ -317,7 +313,149 @@ bool circuit(
         validators_exit_epoch,
         validators_withdrawable_epoch
     );
-   
+}
+    
+#pragma zk_multi_prover 1
+{
+    size_t subproblem_idx = 1;
+    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
+    uint64_t partial_balance = 0;
+    uint64_t partial_all_lido_validator = 0;
+    uint64_t partial_exited_lido_validator = 0;
+
+    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
+        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
+            partial_balance += validator_balances[idx];
+            partial_all_lido_validator += 1;
+            if (validators_exit_epoch[idx] <= epoch) {
+                partial_exited_lido_validator += 1;
+            }
+        }
+    }
+
+    partial_balances[subproblem_idx] = partial_balance;
+    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
+    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
+
+    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, validator_balances);
+    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
+        start_index,
+        validators_pubkeys,
+        validators_withdrawal_credentials,
+        validators_effective_balances,
+        validators_slashed,
+        validators_activation_eligibility_epoch,
+        validators_activation_epoch,
+        validators_exit_epoch,
+        validators_withdrawable_epoch
+    );
+}
+    
+#pragma zk_multi_prover 2
+{
+    size_t subproblem_idx = 2;
+    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
+    uint64_t partial_balance = 0;
+    uint64_t partial_all_lido_validator = 0;
+    uint64_t partial_exited_lido_validator = 0;
+
+    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
+        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
+            partial_balance += validator_balances[idx];
+            partial_all_lido_validator += 1;
+            if (validators_exit_epoch[idx] <= epoch) {
+                partial_exited_lido_validator += 1;
+            }
+        }
+    }
+
+    partial_balances[subproblem_idx] = partial_balance;
+    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
+    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
+
+    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, validator_balances);
+    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
+        start_index,
+        validators_pubkeys,
+        validators_withdrawal_credentials,
+        validators_effective_balances,
+        validators_slashed,
+        validators_activation_eligibility_epoch,
+        validators_activation_epoch,
+        validators_exit_epoch,
+        validators_withdrawable_epoch
+    );
+}
+    
+#pragma zk_multi_prover 3
+{
+    size_t subproblem_idx = 3;
+    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
+    uint64_t partial_balance = 0;
+    uint64_t partial_all_lido_validator = 0;
+    uint64_t partial_exited_lido_validator = 0;
+
+    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
+        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
+            partial_balance += validator_balances[idx];
+            partial_all_lido_validator += 1;
+            if (validators_exit_epoch[idx] <= epoch) {
+                partial_exited_lido_validator += 1;
+            }
+        }
+    }
+
+    partial_balances[subproblem_idx] = partial_balance;
+    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
+    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
+
+    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, validator_balances);
+    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
+        start_index,
+        validators_pubkeys,
+        validators_withdrawal_credentials,
+        validators_effective_balances,
+        validators_slashed,
+        validators_activation_eligibility_epoch,
+        validators_activation_epoch,
+        validators_exit_epoch,
+        validators_withdrawable_epoch
+    );
+}
+    
+
+    // Joining part - "reduce"
+    uint64_t total_balance = 0;
+    uint64_t all_lido_validators = 0;
+    uint64_t exited_lido_validators = 0;
+    for (size_t subproblem_idx = 0; subproblem_idx < SUBPROBLEM_COUNT; ++subproblem_idx) {
+        total_balance += partial_balances[subproblem_idx];
+        all_lido_validators += partial_all_lido_validators[subproblem_idx];
+        exited_lido_validators += partial_exited_lido_validators[subproblem_idx];
+    }
+
+    block_type full_balances_merkle = hash_tree<SUBPROBLEM_COUNT>(partial_balance_hashes);
+    block_type balances_hash = mix_in_size(
+        expand_merkle_to_height(full_balances_merkle, BALANCES_TREE_HEIGHT, BALANCES_TARGET_TREE_HEIGHT),
+        actual_validator_count
+    );
+
+    block_type full_validators_merkle = hash_tree<SUBPROBLEM_COUNT>(partial_validator_hashes);
+    block_type validators_hash = mix_in_size(
+        expand_merkle_to_height(full_validators_merkle, VALIDATORS_TREE_HEIGHT, VALIDATORS_TARGET_TREE_HEIGHT),
+        actual_validator_count
+    );
+
+    // Report checks
+
+    // Verify if computed report doesn't match the passed values
+    bool reportedValuesMatchComputed = (
+        (total_balance == expected_total_balance) &&
+        (all_lido_validators == expected_all_lido_validators) &&
+        (exited_lido_validators == expected_exited_lido_validators)
+    );
+    __builtin_assigner_exit_check(reportedValuesMatchComputed);
+
     // Verify validators' and balances' merkle roots match the passed ones
     // Practically this is a little redundant (the inclusion proof will handle it as well)
     // but keeping it for visibility/ease of debugging
