@@ -8,7 +8,7 @@ using block_type = hash_type::block_type;
 using field_type = algebra::curves::pallas::base_field_type::value_type;
 
 // zerohashes[0] = b'000000000...000' (32 bytes total), zerohashes[i+1] = sha2<256>(zerohasehs[i])
-const std::array<block_type, 40> precomputed_zero_hashes = {{
+const std::array<block_type, 40> precomputed_zero_hashes = {% raw %}{{
 {0x00000000000000000000000000000000_cppui255, 0x00000000000000000000000000000000_cppui255},
 {0xf5a5fd42d16a20302798ef6ed309979b_cppui255, 0x43003d2320d9f0e8ea9831a92759fb4b_cppui255},
 {0xdb56114e00fdd4c1f85c892bf35ac9a8_cppui255, 0x9289aaecb1ebd0a96cde606a748b5d71_cppui255},
@@ -49,7 +49,7 @@ const std::array<block_type, 40> precomputed_zero_hashes = {{
 {0x55d8fb3687ba3ba49f342c77f5a1f89b_cppui255, 0xec83d811446e1a467139213d640b6a74_cppui255},
 {0xf7210d4f8e7e1039790e7bf4efa20755_cppui255, 0x5a10a6db1dd4b95da313aaa88b88fe76_cppui255},
 {0xad21b516cbc645ffe34ab5de1c8aef8c_cppui255, 0xd4e7f8d2b51e8e1456adc7563cda206f_cppui255}
-}};
+}}{% endraw %};
 
 // This is a constant in Ethereum network
 constexpr std::size_t VALIDATORS_MAX_SIZE_LOG2 = 40;
@@ -68,8 +68,8 @@ constexpr std::size_t BALANCES_TARGET_TREE_HEIGHT = VALIDATORS_MAX_SIZE_LOG2 - B
 // but only carrying actual number of validators (~1M by Oct 2023), while circuit has to use array and thus would carry a full
 // VALIDATORS_MAX_SIZE elements - which is a lot. So we're using a smaller "problem size" to carry (and pass aroung) the necessary
 // minimum of "padding" elemetns.
-constexpr std::size_t PROBLEM_SIZE_LOG2 = 4;
-constexpr std::size_t SUBPROBLEM_COUNT_LOG2 = 2; // further slicing the problem into smaller chunks - map-reduce style
+constexpr std::size_t PROBLEM_SIZE_LOG2 = {{problem_size_log2}};
+constexpr std::size_t SUBPROBLEM_COUNT_LOG2 = {{subproblem_count_log2}}; // further slicing the problem into smaller chunks - map-reduce style
 constexpr std::size_t SUBPROBLEM_COUNT = 1 << SUBPROBLEM_COUNT_LOG2;
 constexpr std::size_t SUBPROBLEM_SIZE_LOG2 = PROBLEM_SIZE_LOG2 - SUBPROBLEM_COUNT_LOG2;
 constexpr std::size_t SUBPROBLEM_SIZE = 1 << SUBPROBLEM_SIZE_LOG2; 
@@ -286,9 +286,10 @@ bool circuit(
     std::array<block_type, SUBPROBLEM_COUNT> partial_validator_hashes;
 
     // Parallelizeable part - "map"
-#pragma zk_multi_prover 0
+    {%- for sub_circuit_id in range(subproblem_count) %}
+#pragma zk_multi_prover {{sub_circuit_id}}
 {
-    size_t subproblem_idx = 0;
+    size_t subproblem_idx = {{sub_circuit_id}};
     size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
     uint64_t partial_balance = 0;
     uint64_t partial_all_lido_validator = 0;
@@ -322,118 +323,7 @@ bool circuit(
         validators_withdrawable_epoch
     );
 }
-    
-#pragma zk_multi_prover 1
-{
-    size_t subproblem_idx = 1;
-    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
-    uint64_t partial_balance = 0;
-    uint64_t partial_all_lido_validator = 0;
-    uint64_t partial_exited_lido_validator = 0;
-
-    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
-        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
-            partial_balance += validator_balances[idx];
-            partial_all_lido_validator += 1;
-            if (validators_exit_epoch[idx] <= epoch) {
-                partial_exited_lido_validator += 1;
-            }
-        }
-    }
-
-    partial_balances[subproblem_idx] = partial_balance;
-    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
-    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
-
-    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, actual_validator_count, validator_balances);
-    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
-        start_index,
-        actual_validator_count,
-        validators_pubkeys,
-        validators_withdrawal_credentials,
-        validators_effective_balances,
-        validators_slashed,
-        validators_activation_eligibility_epoch,
-        validators_activation_epoch,
-        validators_exit_epoch,
-        validators_withdrawable_epoch
-    );
-}
-    
-#pragma zk_multi_prover 2
-{
-    size_t subproblem_idx = 2;
-    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
-    uint64_t partial_balance = 0;
-    uint64_t partial_all_lido_validator = 0;
-    uint64_t partial_exited_lido_validator = 0;
-
-    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
-        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
-            partial_balance += validator_balances[idx];
-            partial_all_lido_validator += 1;
-            if (validators_exit_epoch[idx] <= epoch) {
-                partial_exited_lido_validator += 1;
-            }
-        }
-    }
-
-    partial_balances[subproblem_idx] = partial_balance;
-    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
-    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
-
-    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, actual_validator_count, validator_balances);
-    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
-        start_index,
-        actual_validator_count,
-        validators_pubkeys,
-        validators_withdrawal_credentials,
-        validators_effective_balances,
-        validators_slashed,
-        validators_activation_eligibility_epoch,
-        validators_activation_epoch,
-        validators_exit_epoch,
-        validators_withdrawable_epoch
-    );
-}
-    
-#pragma zk_multi_prover 3
-{
-    size_t subproblem_idx = 3;
-    size_t start_index = subproblem_idx * SUBPROBLEM_SIZE;
-    uint64_t partial_balance = 0;
-    uint64_t partial_all_lido_validator = 0;
-    uint64_t partial_exited_lido_validator = 0;
-
-    for (std::size_t idx = start_index; idx < SUBPROBLEM_SIZE; ++idx) {
-        if (is_same(validators_withdrawal_credentials[idx], lido_withdrawal_credentials)) {
-            partial_balance += validator_balances[idx];
-            partial_all_lido_validator += 1;
-            if (validators_exit_epoch[idx] <= epoch) {
-                partial_exited_lido_validator += 1;
-            }
-        }
-    }
-
-    partial_balances[subproblem_idx] = partial_balance;
-    partial_all_lido_validators[subproblem_idx] = partial_all_lido_validator;
-    partial_exited_lido_validators[subproblem_idx] = partial_exited_lido_validator;
-
-    partial_balance_hashes[subproblem_idx] = partial_balances_merkle(start_index, actual_validator_count, validator_balances);
-    partial_validator_hashes[subproblem_idx] = partial_validators_merkle(
-        start_index,
-        actual_validator_count,
-        validators_pubkeys,
-        validators_withdrawal_credentials,
-        validators_effective_balances,
-        validators_slashed,
-        validators_activation_eligibility_epoch,
-        validators_activation_epoch,
-        validators_exit_epoch,
-        validators_withdrawable_epoch
-    );
-}
-    
+    {% endfor %}
 
     // Joining part - "reduce"
     uint64_t total_balance = 0;
