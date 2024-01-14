@@ -144,19 +144,19 @@ block_type pack_four(uint64_t_be val1, uint64_t_be val2, uint64_t_be val3, uint6
 
 template <std::size_t LayerSize>
 block_type hash_layer(std::array<block_type, LayerSize> input, size_t layer){
-    constexpr size_t NextLayerSize = (LayerSize % 2 == 0) ? LayerSize / 2 : (LayerSize / 2 + 1);
+    if (LayerSize == 1) {
+        return input[0];
+    }
+    constexpr size_t NextLayerSize = (LayerSize / 2) + (LayerSize % 2);
     std::array<block_type, NextLayerSize> next_layer;
 
     for (std::size_t leaf_index = 0; leaf_index < LayerSize / 2; leaf_index++) {
         next_layer[leaf_index] = hash<hash_type>(input[2 * leaf_index], input[2 * leaf_index + 1]);
     }
     if (LayerSize % 2 != 0) {
-        next_layer[NextLayerSize - 1] = hash<hash_type>(LayerSize - 1, precomputed_zero_hashes[layer]);
+        next_layer[NextLayerSize - 1] = hash<hash_type>(input[LayerSize - 1], precomputed_zero_hashes[layer]);
     }
-    if (LayerSize == 2)
-        return next_layer[0];
-    else
-        return hash_layer<NextLayerSize>(next_layer, layer + 1);
+    return hash_layer<NextLayerSize>(next_layer, layer + 1);
 }
 
 template <std::size_t LayerSize>
